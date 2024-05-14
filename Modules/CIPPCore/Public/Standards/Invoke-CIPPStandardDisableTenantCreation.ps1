@@ -4,25 +4,33 @@ function Invoke-CIPPStandardDisableTenantCreation {
     Internal
     #>
     param($Tenant, $Settings)
-    If ($Settings.remediate) {
-        try {
-            $body = '{"defaultUserRolePermissions":{"allowedToCreateTenants":false}}'
-    (New-GraphPostRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy' -Type patch -Body $body -ContentType 'application/json')
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Standards API: Disabled users from creating tenants.' -sev Info
-        } catch {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable users from creating tenants:  $($_.exception.message)" -sev 'Error'
-        }
-    }
-    if ($Settings.alert) {
+    $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy' -tenantid $Tenant
+    $State = $CurrentInfo.defaultUserRolePermissions.allowedToCreateTenants
 
-        $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy' -tenantid $Tenant
-        if ($CurrentInfo.defaultUserRolePermissions.allowedToCreateTenants -eq $false) {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not allowed to create tenants.' -sev Info
+    If ($Settings.remediate -eq $true) {
+
+        if ($State) {
+            try {
+                $body = '{"defaultUserRolePermissions":{"allowedToCreateTenants":false}}'
+                New-GraphPostRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy' -Type patch -Body $body -ContentType 'application/json'
+                Write-LogMessage -API 'Standards' -tenant $tenant -message 'Disabled users from creating tenants.' -sev Info
+                $State = $false
+            } catch {
+                Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable users from creating tenants:  $($_.exception.message)" -sev 'Error'
+            }
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are allowed to create tenants.' -sev Alert
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are already disabled from creating tenants.' -sev Info
         }
     }
-    if ($Settings.report) {
-        Add-CIPPBPAField -FieldName 'DisableTenantCreation' -FieldValue [bool]$CurrentInfo.defaultUserRolePermissions.allowedToCreateTenants -StoreAs bool -Tenant $tenant
+    if ($Settings.alert -eq $true) {
+
+        if ($State) {
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are allowed to create tenants.' -sev Alert
+        } else {
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not allowed to create tenants.' -sev Info
+        }
+    }
+    if ($Settings.report -eq $true) {
+        Add-CIPPBPAField -FieldName 'DisableTenantCreation' -FieldValue $State -StoreAs bool -Tenant $tenant
     }
 }

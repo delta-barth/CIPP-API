@@ -4,15 +4,15 @@ function Invoke-CIPPStandardIntuneTemplate {
     Internal
     #>
   param($Tenant, $Settings)
-  If ($Settings.remediate) {
-        
+  If ($Settings.remediate -eq $true) {
+
     Write-Host 'starting template deploy'
     $APINAME = 'Standards'
     foreach ($Template in $Settings.TemplateList) {
       Write-Host 'working on template deploy'
       try {
         $Table = Get-CippTable -tablename 'templates'
-        $Filter = "PartitionKey eq 'IntuneTemplate'" 
+        $Filter = "PartitionKey eq 'IntuneTemplate'"
         $Request = @{body = $null }
         $Request.body = (Get-AzDataTableEntity @Table -Filter $Filter | Where-Object -Property RowKey -Like "$($template.value)*").JSON | ConvertFrom-Json
         $displayname = $request.body.Displayname
@@ -20,6 +20,34 @@ function Invoke-CIPPStandardIntuneTemplate {
         $RawJSON = $Request.body.RawJSON
 
         switch ($Request.body.Type) {
+          'AppProtection' {
+            $TemplateType = ($RawJSON | ConvertFrom-Json).'@odata.type' -replace '#microsoft.graph.', ''
+            $TemplateTypeURL = "$($TemplateType)s"
+            $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$TemplateTypeURL" -tenantid $tenant
+            if ($displayname -in $CheckExististing.displayName) {
+              $ExistingID = $CheckExististing | Where-Object -Property displayName -EQ $PolicyName
+              $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$TemplateTypeURL/$($ExistingID.Id)" -tenantid $tenant -type PATCH -body $RawJSON
+            } else {
+              $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
+            }
+          }
+          'deviceCompliancePolicies' {
+            $TemplateTypeURL = 'deviceCompliancePolicies'
+            $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
+
+            $JSON = $RawJSON | ConvertFrom-Json | Select-Object * -ExcludeProperty id, createdDateTime, lastModifiedDateTime, version, 'scheduledActionsForRule@odata.context', '@odata.context'
+            $JSON.scheduledActionsForRule = @($JSON.scheduledActionsForRule | Select-Object * -ExcludeProperty 'scheduledActionConfigurations@odata.context')
+            $RawJSON = ConvertTo-Json -InputObject $JSON -Depth 20 -Compress
+            Write-Host $RawJSON
+            if ($displayname -in $CheckExististing.displayName) {
+              $ExistingID = $CheckExististing | Where-Object -Property displayName -EQ $PolicyName
+              $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL/$($ExistingID.Id)" -tenantid $tenant -type PATCH -body $RawJSON
+              Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Updated policy $($PolicyName) to template defaults" -Sev 'info'
+            } else {
+              $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
+              Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Added policy $($PolicyName) via template" -Sev 'info'
+            }
+          }
           'Admin' {
             $TemplateTypeURL = 'groupPolicyConfigurations'
             $CreateBody = '{"description":"' + $description + '","displayName":"' + $displayname + '","roleScopeTagIds":["0"]}'
@@ -51,7 +79,7 @@ function Invoke-CIPPStandardIntuneTemplate {
               $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL/$($ExistingID.Id)" -tenantid $tenant -type PATCH -body $RawJSON
               Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Updated policy $($PolicyName) to template defaults" -Sev 'info'
 
-            } else { 
+            } else {
               $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
               Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Added policy $($PolicyName) via template" -Sev 'info'
 
@@ -75,6 +103,7 @@ function Invoke-CIPPStandardIntuneTemplate {
 
         if ($Settings.AssignTo) {
           Write-Host "Assigning Policy to $($Settings.AssignTo) the create ID is $($CreateRequest)"
+          if ($Settings.AssignTo -eq 'customGroup') { $Settings.AssignTo = $Settings.customGroup }
           Set-CIPPAssignedPolicy -PolicyId $CreateRequest.id -TenantFilter $tenant -GroupName $Settings.AssignTo -Type $TemplateTypeURL
         }
         Write-LogMessage -API 'Standards' -tenant $tenant -message "Successfully added Intune Template policy for $($Tenant)" -sev 'Info'
